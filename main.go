@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -36,7 +35,7 @@ func (fi fileInfo) Path() string {
 }
 
 //Ограничить глубину поиска заданым числом, по SIGUSR2 увеличить глубину поиска на +2
-func ListDirectory(ctx context.Context, dir string, sdepth int32, wg *sync.WaitGroup) ([]FileInfo, error) {
+func ListDirectory(ctx context.Context, dir string, sdepth int32, sigUsr1 chan os.Signal) ([]FileInfo, error) {
 	var result []FileInfo
 	if sdepth < 0 {
 
@@ -46,9 +45,7 @@ func ListDirectory(ctx context.Context, dir string, sdepth int32, wg *sync.WaitG
 	case <-ctx.Done():
 		return nil, nil
 	default:
-		wg.Add(1)
-		sigUsr1 := make(chan os.Signal, 1)
-		signal.Notify(sigUsr1, syscall.SIGUSR1)
+
 		select {
 		case <-sigUsr1:
 			log.Printf("current directory: %s \nCurrent search depth %V", dir, sdepth)
@@ -61,7 +58,7 @@ func ListDirectory(ctx context.Context, dir string, sdepth int32, wg *sync.WaitG
 		for _, entry := range res {
 			path := filepath.Join(dir, entry.Name())
 			if entry.IsDir() {
-				child, err := ListDirectory(ctx, path, sdepth-1, wg) //Дополнительно: вынести в горутину
+				child, err := ListDirectory(ctx, path, sdepth-1, sigUsr1) //Дополнительно: вынести в горутину
 				if err != nil {
 					return nil, err
 				}
@@ -78,12 +75,12 @@ func ListDirectory(ctx context.Context, dir string, sdepth int32, wg *sync.WaitG
 	}
 }
 
-func FindFiles(ctx context.Context, ext string, SearchDepth int32, wg *sync.WaitGroup) (FileList, error) {
+func FindFiles(ctx context.Context, ext string, SearchDepth int32, sigUsr1 chan os.Signal) (FileList, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	files, err := ListDirectory(ctx, wd, SearchDepth, wg)
+	files, err := ListDirectory(ctx, wd, SearchDepth, sigUsr1)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +97,6 @@ func FindFiles(ctx context.Context, ext string, SearchDepth int32, wg *sync.Wait
 }
 
 func main() {
-	var wg sync.WaitGroup
 	var SearchDepth int32 = 2
 	const wantExt = ".go"
 	ctx := context.Background()
@@ -110,10 +106,12 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sigUsr2 := make(chan os.Signal, 1)
 	signal.Notify(sigUsr2, syscall.SIGUSR2)
+	sigUsr1 := make(chan os.Signal, 1)
+	signal.Notify(sigUsr1, syscall.SIGUSR1)
 
 	waitCh := make(chan struct{})
 	go func() {
-		res, err := FindFiles(ctx, wantExt, SearchDepth, &wg)
+		res, err := FindFiles(ctx, wantExt, SearchDepth, sigUsr1)
 		if err != nil {
 			log.Printf("Error on search: %v\n", err)
 			os.Exit(1)
@@ -144,4 +142,3 @@ func main() {
 	//Дополнительно: Ожидание всех горутин перед завершением
 
 }
-
